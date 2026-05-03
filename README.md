@@ -30,4 +30,6 @@ sudo pacman -S rust gtk4 gstreamer gst-plugins-base gst-plugins-good gst-plugins
 cargo run
 ```
 
+Enable `Log Debug Info` in the settings panel to print lightweight once-per-second capture stats in the console.
+
 If the app opens but the video stays black, verify the console HDMI cable is plugged into the orange ShadowCast core and that no other program is using the capture device.

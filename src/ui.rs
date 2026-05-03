@@ -63,6 +63,10 @@ pub fn build(app: &gtk::Application) {
     let format_combo = gtk::ComboBoxText::new();
     let resolution_combo = gtk::ComboBoxText::new();
     let fps_combo = gtk::ComboBoxText::new();
+    let debug_switch = gtk::Switch::builder()
+        .active(false)
+        .valign(gtk::Align::Center)
+        .build();
     let restart_button = gtk::Button::with_label("Apply");
     let settings_button = gtk::ToggleButton::with_label("Settings");
 
@@ -108,6 +112,7 @@ pub fn build(app: &gtk::Application) {
     settings_box.append(&setting_row("Input Format", &format_combo));
     settings_box.append(&setting_row("Resolution", &resolution_combo));
     settings_box.append(&setting_row("Frame Rate", &fps_combo));
+    settings_box.append(&setting_row("Log Debug Info", &debug_switch));
     settings_box.append(&restart_button);
 
     let settings_frame = gtk::Frame::builder().child(&settings_box).build();
@@ -196,6 +201,7 @@ pub fn build(app: &gtk::Application) {
         let format_combo = format_combo.clone();
         let resolution_combo = resolution_combo.clone();
         let fps_combo = fps_combo.clone();
+        let debug_switch = debug_switch.clone();
 
         move || {
             let Some(settings) = capture_settings_from_widgets(
@@ -204,6 +210,7 @@ pub fn build(app: &gtk::Application) {
                 &format_combo,
                 &resolution_combo,
                 &fps_combo,
+                &debug_switch,
             ) else {
                 status_label.set_label("Choose a video device before starting capture.");
                 return;
@@ -549,6 +556,7 @@ fn capture_settings_from_widgets(
     format_combo: &gtk::ComboBoxText,
     resolution_combo: &gtk::ComboBoxText,
     fps_combo: &gtk::ComboBoxText,
+    debug_switch: &gtk::Switch,
 ) -> Option<CaptureSettings> {
     let video_device = active_id(video_combo)?;
     let audio_device = active_id(audio_combo).filter(|id| id != "none");
@@ -565,6 +573,7 @@ fn capture_settings_from_widgets(
         width,
         height,
         fps,
+        debug_stats: debug_switch.is_active(),
     })
 }
 

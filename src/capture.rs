@@ -2,10 +2,10 @@ use anyhow::{anyhow, Context, Result};
 use gst::prelude::*;
 use gtk::glib;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const STARTUP_RETRY_LIMIT: usize = 6;
 const STARTUP_RETRY_INTERVAL: Duration = Duration::from_millis(700);
@@ -18,6 +18,7 @@ pub struct CaptureSettings {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    pub debug_stats: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,6 +39,7 @@ pub struct CaptureController {
     pipeline: Option<gst::Pipeline>,
     bus_watch: Option<gst::bus::BusWatchGuard>,
     health_check_cancel: Option<Arc<AtomicBool>>,
+    stats_report_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl CaptureController {
@@ -46,6 +48,7 @@ impl CaptureController {
             pipeline: None,
             bus_watch: None,
             health_check_cancel: None,
+            stats_report_cancel: None,
         }
     }
 
@@ -82,6 +85,11 @@ impl CaptureController {
         } else {
             None
         };
+
+        if settings.debug_stats {
+            let stats_cancel = start_debug_stats(&pipeline, settings.audio_device.is_some());
+            self.stats_report_cancel = Some(stats_cancel);
+        }
 
         if let Some(bus) = pipeline.bus() {
             let on_bus_event = std::rc::Rc::clone(&on_event);
@@ -204,6 +212,10 @@ impl CaptureController {
             cancel.store(true, Ordering::Relaxed);
         }
 
+        if let Some(cancel) = self.stats_report_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+
         if let Some(bus_watch) = self.bus_watch.take() {
             drop(bus_watch);
         }
@@ -223,7 +235,7 @@ impl Drop for CaptureController {
 fn build_pipeline_description(settings: &CaptureSettings) -> String {
     let video_caps = video_caps(settings);
     let video = format!(
-        "v4l2src device={} do-timestamp=true ! {} ! queue max-size-buffers=2 leaky=downstream ! {} ! videoconvert ! identity name=video_probe silent=true ! gtk4paintablesink name=video_sink sync=false",
+        "v4l2src name=video_source device={} do-timestamp=true ! {} ! queue max-size-buffers=2 leaky=downstream ! {} ! videoconvert ! identity name=video_probe silent=true ! gtk4paintablesink name=video_sink sync=false",
         gst_quote(&settings.video_device),
         video_caps,
         decode_chain_for(&settings.pixel_format),
@@ -260,19 +272,19 @@ fn decode_chain_for(pixel_format: &str) -> &'static str {
 fn audio_pipeline(audio_device: &str) -> String {
     if let Some(source_name) = audio_device.strip_prefix("pulse:") {
         return format!(
-            "pulsesrc device={} do-timestamp=true ! queue max-size-buffers=8 leaky=downstream ! audioconvert ! audioresample ! identity name=audio_probe silent=true ! autoaudiosink sync=false",
+            "pulsesrc name=audio_source device={} do-timestamp=true ! queue max-size-buffers=8 leaky=downstream ! audioconvert ! audioresample ! identity name=audio_probe silent=true ! autoaudiosink sync=false",
             gst_quote(source_name)
         );
     }
 
     if let Some(alsa_device) = audio_device.strip_prefix("alsa:") {
         return format!(
-            "alsasrc device={} do-timestamp=true ! queue max-size-buffers=8 leaky=downstream ! audioconvert ! audioresample ! identity name=audio_probe silent=true ! autoaudiosink sync=false",
+            "alsasrc name=audio_source device={} do-timestamp=true ! queue max-size-buffers=8 leaky=downstream ! audioconvert ! audioresample ! identity name=audio_probe silent=true ! autoaudiosink sync=false",
             gst_quote(alsa_device)
         );
     }
 
-    "autoaudiosrc ! queue max-size-buffers=8 leaky=downstream ! audioconvert ! audioresample ! identity name=audio_probe silent=true ! autoaudiosink sync=false".to_string()
+    "autoaudiosrc name=audio_source ! queue max-size-buffers=8 leaky=downstream ! audioconvert ! audioresample ! identity name=audio_probe silent=true ! autoaudiosink sync=false".to_string()
 }
 
 fn gst_quote(value: &str) -> String {
@@ -311,4 +323,167 @@ fn attach_first_buffer_probe(
     });
 
     seen
+}
+
+#[derive(Default)]
+struct DebugCounters {
+    video_buffers: AtomicU64,
+    video_bytes: AtomicU64,
+    audio_buffers: AtomicU64,
+    audio_bytes: AtomicU64,
+}
+
+fn start_debug_stats(pipeline: &gst::Pipeline, has_audio: bool) -> Arc<AtomicBool> {
+    let counters = Arc::new(DebugCounters::default());
+    attach_debug_stats_probe(
+        pipeline,
+        "video_source",
+        StreamKind::Video,
+        Arc::clone(&counters),
+    );
+
+    if has_audio {
+        attach_debug_stats_probe(
+            pipeline,
+            "audio_source",
+            StreamKind::Audio,
+            Arc::clone(&counters),
+        );
+    }
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_for_timer = Arc::clone(&cancel);
+    let started_at = Instant::now();
+    let mut last_video_buffers = 0;
+    let mut last_video_bytes = 0;
+    let mut last_audio_buffers = 0;
+    let mut last_audio_bytes = 0;
+
+    eprintln!("[shadowcatch] debug stats enabled");
+    glib::timeout_add_seconds_local(1, move || {
+        if cancel_for_timer.load(Ordering::Relaxed) {
+            return glib::ControlFlow::Break;
+        }
+
+        let video_buffers = counters.video_buffers.load(Ordering::Relaxed);
+        let video_bytes = counters.video_bytes.load(Ordering::Relaxed);
+        let audio_buffers = counters.audio_buffers.load(Ordering::Relaxed);
+        let audio_bytes = counters.audio_bytes.load(Ordering::Relaxed);
+
+        let video_buffers_per_second = video_buffers.saturating_sub(last_video_buffers);
+        let video_bytes_per_second = video_bytes.saturating_sub(last_video_bytes);
+        let audio_buffers_per_second = audio_buffers.saturating_sub(last_audio_buffers);
+        let audio_bytes_per_second = audio_bytes.saturating_sub(last_audio_bytes);
+
+        last_video_buffers = video_buffers;
+        last_video_bytes = video_bytes;
+        last_audio_buffers = audio_buffers;
+        last_audio_bytes = audio_bytes;
+
+        if has_audio {
+            eprintln!(
+                "[shadowcatch] up {} | video {} fps, {}, {} total | audio {} buf/s, {}, {} total",
+                format_uptime(started_at.elapsed()),
+                video_buffers_per_second,
+                format_bitrate(video_bytes_per_second),
+                format_bytes(video_bytes),
+                audio_buffers_per_second,
+                format_bitrate(audio_bytes_per_second),
+                format_bytes(audio_bytes),
+            );
+        } else {
+            eprintln!(
+                "[shadowcatch] up {} | video {} fps, {}, {} total",
+                format_uptime(started_at.elapsed()),
+                video_buffers_per_second,
+                format_bitrate(video_bytes_per_second),
+                format_bytes(video_bytes),
+            );
+        }
+
+        glib::ControlFlow::Continue
+    });
+
+    cancel
+}
+
+#[derive(Clone, Copy)]
+enum StreamKind {
+    Video,
+    Audio,
+}
+
+fn attach_debug_stats_probe(
+    pipeline: &gst::Pipeline,
+    element_name: &str,
+    stream_kind: StreamKind,
+    counters: Arc<DebugCounters>,
+) {
+    let Some(element) = pipeline.by_name(element_name) else {
+        return;
+    };
+    let Some(pad) = element.static_pad("src") else {
+        return;
+    };
+
+    pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+        let Some(buffer) = info.buffer() else {
+            return gst::PadProbeReturn::Ok;
+        };
+        let bytes = buffer.size() as u64;
+
+        match stream_kind {
+            StreamKind::Video => {
+                counters.video_buffers.fetch_add(1, Ordering::Relaxed);
+                counters.video_bytes.fetch_add(bytes, Ordering::Relaxed);
+            }
+            StreamKind::Audio => {
+                counters.audio_buffers.fetch_add(1, Ordering::Relaxed);
+                counters.audio_bytes.fetch_add(bytes, Ordering::Relaxed);
+            }
+        }
+
+        gst::PadProbeReturn::Ok
+    });
+}
+
+fn format_uptime(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m {seconds:02}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+fn format_bitrate(bytes_per_second: u64) -> String {
+    let bits_per_second = bytes_per_second as f64 * 8.0;
+
+    if bits_per_second >= 1_000_000.0 {
+        format!("{:.2} Mb/s", bits_per_second / 1_000_000.0)
+    } else if bits_per_second >= 1_000.0 {
+        format!("{:.1} Kb/s", bits_per_second / 1_000.0)
+    } else {
+        format!("{bits_per_second:.0} b/s")
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    let bytes = bytes as f64;
+
+    if bytes >= 1_000_000_000.0 {
+        format!("{:.2} GB", bytes / 1_000_000_000.0)
+    } else if bytes >= 1_000_000.0 {
+        format!("{:.2} MB", bytes / 1_000_000.0)
+    } else if bytes >= 1_000.0 {
+        format!("{:.1} KB", bytes / 1_000.0)
+    } else {
+        format!("{bytes:.0} B")
+    }
 }

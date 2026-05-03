@@ -1,0 +1,50 @@
+# Maintainer: Nyxalium
+
+pkgname=shadowcatch-3-pro-viewer-git
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc='Small Linux viewer for ShadowCast 3 Pro capture devices'
+arch=('x86_64')
+url='https://github.com/nyxalium/shadowcatch-3-pro'
+license=('MIT')
+depends=(
+  'gtk4'
+  'gstreamer'
+  'gst-plugins-base'
+  'gst-plugins-good'
+  'gst-plugins-bad'
+  'gst-plugin-gtk4'
+  'v4l-utils'
+)
+optdepends=(
+  'libpulse: PulseAudio/PipeWire source discovery via pactl'
+  'alsa-utils: ALSA capture source discovery via arecord'
+)
+makedepends=('git' 'rust')
+provides=('shadowcatch-3-pro-viewer')
+conflicts=('shadowcatch-3-pro-viewer')
+source=('git+https://github.com/nyxalium/shadowcatch-3-pro.git')
+sha256sums=('SKIP')
+
+pkgver() {
+  cd shadowcatch-3-pro
+  printf '0.1.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd shadowcatch-3-pro
+  cargo build --release
+}
+
+package() {
+  cd shadowcatch-3-pro
+
+  install -Dm755 "target/release/shadowcatch-3-pro-viewer" \
+    "$pkgdir/usr/bin/shadowcatch-3-pro-viewer"
+  install -Dm644 "data/dev.nyxalium.ShadowCatch3Pro.desktop" \
+    "$pkgdir/usr/share/applications/dev.nyxalium.ShadowCatch3Pro.desktop"
+  install -Dm644 "LICENSE" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "README.md" \
+    "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

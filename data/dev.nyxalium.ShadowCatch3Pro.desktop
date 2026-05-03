@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=ShadowCatch 3 Pro
+Comment=View ShadowCast 3 Pro capture devices
+Exec=shadowcatch-3-pro-viewer
+Terminal=false
+Categories=AudioVideo;Video;GTK;
+StartupNotify=true

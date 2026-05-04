@@ -250,7 +250,11 @@ pub fn build(app: &gtk::Application) {
 
     {
         let start_capture = Rc::clone(&start_capture);
-        restart_button.connect_clicked(move |_| start_capture());
+        let settings_button = settings_button.clone();
+        restart_button.connect_clicked(move |_| {
+            start_capture();
+            settings_button.set_active(false);
+        });
     }
 
     window.connect_close_request(move |_| {

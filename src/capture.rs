@@ -27,6 +27,7 @@ pub enum CaptureEvent {
     Retrying(String),
     VideoFrame,
     AudioFrame,
+    DebugStats(String),
     Warning(String),
     Error(String),
     NoFrames {
@@ -87,7 +88,11 @@ impl CaptureController {
         };
 
         if settings.debug_stats {
-            let stats_cancel = start_debug_stats(&pipeline, settings.audio_device.is_some());
+            let stats_cancel = start_debug_stats(
+                &pipeline,
+                settings.audio_device.is_some(),
+                std::rc::Rc::clone(&on_event),
+            );
             self.stats_report_cancel = Some(stats_cancel);
         }
 
@@ -333,7 +338,11 @@ struct DebugCounters {
     audio_bytes: AtomicU64,
 }
 
-fn start_debug_stats(pipeline: &gst::Pipeline, has_audio: bool) -> Arc<AtomicBool> {
+fn start_debug_stats(
+    pipeline: &gst::Pipeline,
+    has_audio: bool,
+    on_event: std::rc::Rc<dyn Fn(CaptureEvent)>,
+) -> Arc<AtomicBool> {
     let counters = Arc::new(DebugCounters::default());
     attach_debug_stats_probe(
         pipeline,
@@ -359,7 +368,6 @@ fn start_debug_stats(pipeline: &gst::Pipeline, has_audio: bool) -> Arc<AtomicBoo
     let mut last_audio_buffers = 0;
     let mut last_audio_bytes = 0;
 
-    eprintln!("[shadowcatch] debug stats enabled");
     glib::timeout_add_seconds_local(1, move || {
         if cancel_for_timer.load(Ordering::Relaxed) {
             return glib::ControlFlow::Break;
@@ -380,9 +388,9 @@ fn start_debug_stats(pipeline: &gst::Pipeline, has_audio: bool) -> Arc<AtomicBoo
         last_audio_buffers = audio_buffers;
         last_audio_bytes = audio_bytes;
 
-        if has_audio {
-            eprintln!(
-                "[shadowcatch] up {} | video {} fps, {}, {} total | audio {} buf/s, {}, {} total",
+        let stats = if has_audio {
+            format!(
+                "up {} | video {} fps, {}, {} total | audio {} buf/s, {}, {} total",
                 format_uptime(started_at.elapsed()),
                 video_buffers_per_second,
                 format_bitrate(video_bytes_per_second),
@@ -390,16 +398,18 @@ fn start_debug_stats(pipeline: &gst::Pipeline, has_audio: bool) -> Arc<AtomicBoo
                 audio_buffers_per_second,
                 format_bitrate(audio_bytes_per_second),
                 format_bytes(audio_bytes),
-            );
+            )
         } else {
-            eprintln!(
-                "[shadowcatch] up {} | video {} fps, {}, {} total",
+            format!(
+                "up {} | video {} fps, {}, {} total",
                 format_uptime(started_at.elapsed()),
                 video_buffers_per_second,
                 format_bitrate(video_bytes_per_second),
                 format_bytes(video_bytes),
-            );
-        }
+            )
+        };
+
+        on_event(CaptureEvent::DebugStats(stats));
 
         glib::ControlFlow::Continue
     });

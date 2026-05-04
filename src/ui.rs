@@ -45,8 +45,10 @@ pub fn build(app: &gtk::Application) {
     let status_label = gtk::Label::builder()
         .wrap(true)
         .xalign(0.0)
-        .label("Ready")
+        .label("")
         .build();
+    status_label.add_css_class("dim-label");
+    status_label.set_visible(false);
     let diagnostic_label = gtk::Label::builder()
         .wrap(true)
         .justify(gtk::Justification::Center)
@@ -216,6 +218,13 @@ pub fn build(app: &gtk::Application) {
                 return;
             };
 
+            status_label.set_visible(settings.debug_stats);
+            if settings.debug_stats {
+                status_label.set_label("Waiting for debug stats...");
+            } else {
+                status_label.set_label("");
+            }
+
             let pipeline_status = status_label.clone();
             let pipeline_diagnostics = diagnostic_label.clone();
             match controller.borrow_mut().start(&settings, move |event| {
@@ -225,18 +234,13 @@ pub fn build(app: &gtk::Application) {
                     picture.set_paintable(Some(&paintable));
                     diagnostic_label.set_visible(true);
                     diagnostic_label.set_label("Waiting for the first video frame...");
-                    status_label.set_label(&format!(
-                        "Started {} at {}x{} {}fps ({}). Waiting for buffers...",
-                        settings.video_device,
-                        settings.width,
-                        settings.height,
-                        settings.fps,
-                        settings.pixel_format
-                    ));
                     save_settings(&settings);
                 }
                 Err(err) => {
-                    status_label.set_label(&format!(
+                    status_label.set_visible(false);
+                    status_label.set_label("");
+                    diagnostic_label.set_visible(true);
+                    diagnostic_label.set_label(&format!(
                         "Could not start capture. Check that HDMI is connected and no other app is using the device.\n{err:#}"
                     ));
                 }
@@ -282,29 +286,26 @@ fn update_capture_status(
         CaptureEvent::PipelineStarted => {
             diagnostic_label.set_visible(true);
             diagnostic_label.set_label("Pipeline started. Waiting for video/audio buffers...");
-            status_label.set_label("Pipeline started. Waiting for buffers...");
         }
         CaptureEvent::Retrying(message) => {
             diagnostic_label.set_visible(true);
             diagnostic_label.set_label(&message);
-            status_label.set_label("Warming up the capture stream.");
         }
         CaptureEvent::VideoFrame => {
             diagnostic_label.set_visible(false);
-            status_label.set_label("Video frames are arriving.");
         }
-        CaptureEvent::AudioFrame => {
-            status_label.set_label("Audio buffers are arriving.");
+        CaptureEvent::AudioFrame => {}
+        CaptureEvent::DebugStats(stats) => {
+            status_label.set_visible(true);
+            status_label.set_label(&stats);
         }
         CaptureEvent::Warning(message) => {
             diagnostic_label.set_visible(true);
             diagnostic_label.set_label(&format!("Capture warning:\n{message}"));
-            status_label.set_label("Capture warning. See the message in the video area.");
         }
         CaptureEvent::Error(message) => {
             diagnostic_label.set_visible(true);
             diagnostic_label.set_label(&format!("Capture error:\n{message}"));
-            status_label.set_label("Capture error. See the message in the video area.");
         }
         CaptureEvent::NoFrames {
             waiting_for_video,
@@ -325,7 +326,6 @@ fn update_capture_status(
                  ShadowCatch will retry the stream automatically.",
                 waiting_for.join(" or ")
             ));
-            status_label.set_label("Pipeline opened, but buffers did not arrive.");
         }
     }
 }

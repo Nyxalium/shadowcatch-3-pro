@@ -4,6 +4,8 @@ ShadowCatch 3 Pro Viewer is a small Linux desktop app for viewing and listening 
 
 The first target is Arch/CachyOS with GTK4, GStreamer, V4L2, and PipeWire/PulseAudio.
 
+![ShadowCatch 3 Pro Viewer showing a live capture feed and settings drawer](assets/shadowcatch-preview.webp)
+
 ## Features
 
 - Auto-selects likely ShadowCast video and audio devices.
